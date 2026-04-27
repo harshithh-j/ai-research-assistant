@@ -1,0 +1,21 @@
+# Virtual environment
+venv/
+
+# Environment variables (NEVER commit this)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# FAISS indexes (will be generated locally)
+*.index
+*.faiss
+
+# Uploaded PDFs (will add in Phase 2)
+data/
+
+# OS files
+.DS_Store
