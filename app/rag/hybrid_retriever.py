@@ -1,11 +1,9 @@
 from typing import List, Dict
 from app.rag.semantic_search import semantic_search
 from app.rag.bm25_search import bm25_search
+from app.rag.reranker import rerank
 
 def normalize_scores(results: List[Dict], score_key: str) -> List[Dict]:
-    """
-    Normalizes scores to 0-1 range using min-max normalization.
-    """
     if not results:
         return results
 
@@ -26,27 +24,31 @@ def hybrid_search(
     query: str,
     k: int = 5,
     semantic_weight: float = 0.7,
-    bm25_weight: float = 0.3
+    bm25_weight: float = 0.3,
+    use_reranking: bool = True,
+    rerank_candidates: int = 20,
 ) -> List[Dict]:
     """
-    Combines semantic and BM25 search results into a single ranked list.
-    Uses weighted combination of normalized scores.
+    Hybrid search with optional re-ranking.
+    - Retrieves rerank_candidates from semantic + BM25
+    - Re-ranks with cross-encoder if use_reranking=True
+    - Returns top k
     """
-    # Run both searches
-    semantic_results = semantic_search(query, k=10)
-    bm25_results = bm25_search(query, k=10)
+    # Retrieve more candidates for re-ranking
+    candidate_k = rerank_candidates if use_reranking else k
 
-    # Normalize each set of scores to 0-1
+    semantic_results = semantic_search(query, k=candidate_k)
+    bm25_results = bm25_search(query, k=candidate_k)
+
     semantic_results = normalize_scores(semantic_results, "semantic_score")
     bm25_results = normalize_scores(bm25_results, "bm25_score")
 
-    # Build lookup by chunk_id
     scores_map: Dict[str, Dict] = {}
 
     for r in semantic_results:
         cid = r["chunk_id"]
         scores_map[cid] = r.copy()
-        scores_map[cid]["bm25_score"] = 0.0  # default if not in BM25 results
+        scores_map[cid]["bm25_score"] = 0.0
 
     for r in bm25_results:
         cid = r["chunk_id"]
@@ -54,16 +56,27 @@ def hybrid_search(
             scores_map[cid]["bm25_score"] = r["bm25_score"]
         else:
             entry = r.copy()
-            entry["semantic_score"] = 0.0  # default if not in semantic results
+            entry["semantic_score"] = 0.0
             scores_map[cid] = entry
 
-    # Compute hybrid score
     for cid, entry in scores_map.items():
         entry["hybrid_score"] = (
             semantic_weight * entry["semantic_score"] +
             bm25_weight * entry["bm25_score"]
         )
 
-    # Sort by hybrid score and return top-k
-    ranked = sorted(scores_map.values(), key=lambda x: x["hybrid_score"], reverse=True)
-    return ranked[:k]
+    ranked = sorted(
+        scores_map.values(),
+        key=lambda x: x["hybrid_score"],
+        reverse=True
+    )
+
+    candidates = ranked[:candidate_k]
+
+    # Re-rank with cross-encoder if enabled
+    if use_reranking and candidates:
+        candidates = rerank(query, candidates, top_k=k)
+    else:
+        candidates = candidates[:k]
+
+    return candidates

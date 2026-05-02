@@ -4,18 +4,13 @@ from typing import Generator, List, Dict
 from app.core.config import settings
 from app.tools.registry import get_claude_tools, get_tool
 from app.rag.hybrid_retriever import hybrid_search
+from app.rag.compressor import compress_chunks
 from app.utils.prompt_builder import format_chunks_as_context
 from app.services.query_rewriter import rewrite_query
 
 client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 def build_research_system_prompt(chunks: List[Dict]) -> str:
-    """
-    Builds a system prompt that includes:
-    - Document context from RAG
-    - Instructions for tool use
-    - Citation guidelines
-    """
     context = format_chunks_as_context(chunks)
 
     return (
@@ -36,38 +31,56 @@ def build_research_system_prompt(chunks: List[Dict]) -> str:
         "6. Do NOT add a sources list at the end — it will be appended automatically\n"
     )
 
-def run_research(question: str, k: int = 5) -> Generator[str, None, None]:
+def run_research(
+    question: str,
+    k: int = 5,
+    use_reranking: bool = True,
+    use_compression: bool = True,
+) -> Generator[str, None, None]:
     """
-    Unified research pipeline:
-    1. Rewrite query
-    2. Retrieve document chunks
-    3. Give Claude chunks as context + web_search as tool
-    4. Claude answers from docs, web, or both
-    5. Stream final answer with citations
+    Full research pipeline:
+    1. Query rewriting
+    2. Hybrid search with re-ranking
+    3. Context compression
+    4. RAG + tool loop
+    5. Streaming answer with citations
     """
 
-    # Step 1: Rewrite query for better retrieval
+    # Step 1: Rewrite query
     search_query = rewrite_query(question)
     yield f"Search query: {search_query}\n\n"
 
-    # Step 2: Retrieve relevant chunks
-    chunks = hybrid_search(query=search_query, k=k)
+    # Step 2: Retrieve + re-rank
+    chunks = hybrid_search(
+        query=search_query,
+        k=k,
+        use_reranking=use_reranking,
+        rerank_candidates=20
+    )
 
     if chunks:
-        yield f"Found {len(chunks)} relevant document chunks\n\n"
+        yield f"Retrieved {len(chunks)} chunks"
+        if use_reranking:
+            yield " (re-ranked)"
+        yield "\n\n"
     else:
-        yield "No relevant document chunks found — will rely on web search\n\n"
+        yield "No relevant chunks found — will rely on web search\n\n"
 
-    # Step 3: Build system prompt with document context
+    # Step 3: Compress chunks
+    if use_compression and chunks:
+        chunks = compress_chunks(question, chunks)
+        yield "Context compressed\n\n"
+
+    # Step 4: Build system prompt
     system_prompt = build_research_system_prompt(chunks)
 
-    # Step 4: Build source list from documents
+    # Step 5: Pre-build document sources
     doc_sources = "\n\nDocument Sources:\n" + "\n".join(
         f"[{i}] {c['source']} (page {c['page']})"
         for i, c in enumerate(chunks, 1)
     ) if chunks else ""
 
-    # Step 5: Run tool loop — Claude decides if web search is needed
+    # Step 6: Tool loop
     tools = get_claude_tools()
     messages = [{"role": "user", "content": question}]
 
@@ -79,7 +92,6 @@ def run_research(question: str, k: int = 5) -> Generator[str, None, None]:
         messages=messages
     )
 
-    # Step 6: Handle tool calls if Claude requests them
     web_sources = []
 
     while response.stop_reason == "tool_use":
@@ -95,11 +107,9 @@ def run_research(question: str, k: int = 5) -> Generator[str, None, None]:
                 tool = get_tool(tool_name)
                 result = tool.run(**tool_input)
 
-                # Track web sources for citation
                 if tool_name == "web_search":
                     web_sources.append({
                         "query": tool_input.get("query", ""),
-                        "results": result
                     })
 
                 tool_results.append({
@@ -129,7 +139,7 @@ def run_research(question: str, k: int = 5) -> Generator[str, None, None]:
         for text in stream.text_stream:
             yield text
 
-    # Step 8: Append all sources
+    # Step 8: Append sources
     if doc_sources:
         yield doc_sources
 
