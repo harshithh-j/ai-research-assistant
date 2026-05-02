@@ -89,7 +89,7 @@ User Question
 
 ### 1. Clone the repo
 ```bash
-git clone https://github.com/your-username/ai-research-assistant.git
+git clone https://github.com/harshithh-j/ai-research-assistant.git
 cd ai-research-assistant
 ```
 
@@ -217,6 +217,7 @@ Built as a hands-on project after completing:
 
 **"Working with the Claude API"** — Anthropic (Skilljar)
 
+🎓https://verify.skilljar.com/c/vkhxo9nu83wq
 
 ---
 
